@@ -6,7 +6,6 @@ from config import BOT_TOKEN
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('HI! Я ваш бот. Чем могу помочь?')
 
-# Главная функция для запуска бота
 def main():
     # Создаем объект Application и передаем токен
     application = Application.builder().token(BOT_TOKEN).build()
