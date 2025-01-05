@@ -1,6 +1,7 @@
 from config import BOT_TOKEN
 import os
 import logging
+import sqlite3
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -12,9 +13,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Хранилище языка для каждого пользователя
-user_language = {}
-
 # Список доступных языков
 languages = {
     "en": "🇬🇧 English",
@@ -24,6 +22,42 @@ languages = {
     "de": "🇩🇪 German"
 }
 
+# --- Функции для работы с базой данных ---
+def init_db():
+    """Создаёт таблицу для хранения данных пользователей, если она ещё не создана."""
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            language TEXT DEFAULT 'en'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_user_language(user_id):
+    """Возвращает язык пользователя из базы данных. Если пользователь не найден, возвращает 'en'."""
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else "en"
+
+def set_user_language(user_id, language):
+    """Устанавливает язык пользователя в базе данных."""
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users (user_id, language)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET language = excluded.language
+    """, (user_id, language))
+    conn.commit()
+    conn.close()
+
+# --- Функции бота ---
 # Функция перевода текста через Google Translate API
 def translate_text(text, target_language):
     try:
@@ -43,7 +77,6 @@ def translate_text(text, target_language):
         logger.error(f"Ошибка перевода: {e}")
         return text  # Если перевод не удался, возвращаем оригинальный текст
 
-# Функция для обработки команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hello! 👋 I am a bot that can provide you with interesting random facts.\n"
@@ -51,7 +84,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "You can also configure the language using the /language command."
     )
 
-# Функция для обработки команды /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Here's what I can do:\n\n"
@@ -61,7 +93,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Show this message\n"
     )
 
-# Функция для обработки команды /language
 async def language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton(languages["en"], callback_data='en')],
@@ -77,7 +108,6 @@ async def language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
-# Callback-функция для обработки выбора языка
 async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -85,18 +115,19 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = query.from_user.id
     selected_language = query.data
 
-    # Сохраняем выбранный язык для пользователя
-    user_language[user_id] = selected_language
+    # Сохраняем выбранный язык в базу данных
+    set_user_language(user_id, selected_language)
 
     await query.edit_message_text(
         text=f"✅ You have selected the language: {languages[selected_language]}.\n"
              "From now on, you will receive facts in this language."
     )
 
-# Функция для обработки команды /fact
 async def fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
-    lang = user_language.get(user_id, 'en')  # По умолчанию язык — английский
+
+    # Получаем язык пользователя из базы данных
+    lang = get_user_language(user_id)
 
     # URL API для получения факта
     url = f"https://uselessfacts.jsph.pl/random.json?language=en"  # Всегда получаем факт на английском
@@ -116,8 +147,11 @@ async def fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error fetching fact: {e}")
         await update.message.reply_text("An error occurred while retrieving the fact. Please try again later.")
 
-# Основной код запуска бота
+# --- Основной код ---
 def main():
+    # Инициализация базы данных
+    init_db()
+
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Добавление обработчиков команд
